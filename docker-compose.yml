@@ -1,1 +1,161 @@
+version: '3.8'
 
+services:
+  # DICOM Receiver - Configured for high volume
+  orthanc:
+    image: orthancteam/orthanc:latest
+    container_name: dicom-receiver
+    ports:
+      - "104:4242"     # DICOM port
+      - "4242:4242"    # HTTP API
+    environment:
+      # Orthanc configuration for high throughput
+      - ORTHANC__NAME=EdgeGateway
+      - ORTHANC__DICOM_AET=EDGE_GW
+      - ORTHANC__DICOM_CHECK_CALLED_AET=false
+      - ORTHANC__DICOM_PORT=4242
+      - ORTHANC__STORAGE_COMPRESSION=false
+      - ORTHANC__OVERWRITE_INSTANCES=true
+      - ORTHANC__MAXIMUM_STORAGE_SIZE=0  # No limit
+      - ORTHANC__MAXIMUM_PATIENT_COUNT=0  # No limit
+      - ORTHANC__STABLE_AGE=10  # Consider stable after 10 seconds
+      - ORTHANC__DICOM_SCP_TIMEOUT=60  # Longer timeout for large studies
+      - ORTHANC__DICOM_ASSOCIATION_CLOSE_DELAY=0  # No delay
+      - ORTHANC__JOBS_ENGINE_THREADS_COUNT=4  # Parallel processing
+      - ORTHANC__HTTP_THREADS_COUNT=10  # More HTTP threads
+    volumes:
+      - ./orthanc/config:/etc/orthanc:ro
+      - orthanc-buffer:/var/lib/orthanc/db
+    networks:
+      - edge-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+  # HL7 Receiver
+  hl7-receiver:
+    build: ./hl7-receiver
+    container_name: hl7-receiver
+    ports:
+      - "2575:2575"
+      - "2576:2576"
+    environment:
+      - REDIS_HOST=redis
+      - BUFFER_PATH=/app/buffer
+      - TLS_ENABLED=true
+    volumes:
+      - ./certs:/app/certs:ro
+      - hl7-buffer:/app/buffer
+    depends_on:
+      - redis
+    networks:
+      - edge-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  # Optimized Cloud Forwarder
+  cloud-forwarder:
+    build: ./cloud-forwarder
+    container_name: cloud-forwarder
+    environment:
+      # AWS Configuration
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=${AWS_REGION}
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      
+      # Service URLs
+      - ORTHANC_URL=http://orthanc:4242
+      - REDIS_HOST=redis
+      
+      # Optimized upload settings for multiple images
+      - UPLOAD_MODE=${UPLOAD_MODE:-study}          # 'study' or 'instance'
+      - BATCH_SIZE=${BATCH_SIZE:-20}               # Process more at once
+      - PARALLEL_UPLOADS=${PARALLEL_UPLOADS:-5}    # Concurrent uploads
+      - UPLOAD_INTERVAL=${UPLOAD_INTERVAL:-30}     # Check interval
+      - DELETE_AFTER_UPLOAD=${DELETE_AFTER_UPLOAD:-true}
+      - COMPRESS_UPLOADS=${COMPRESS_UPLOADS:-auto} # auto, true, false
+      
+    volumes:
+      - hl7-buffer:/app/hl7-buffer:ro
+    depends_on:
+      - orthanc
+      - redis
+      - hl7-receiver
+    networks:
+      - edge-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+
+  # Redis with optimized settings
+  redis:
+    image: redis:7-alpine
+    container_name: edge-redis
+    command: >
+      redis-server
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --save 60 1000
+      --save 300 100
+      --save 900 1
+    volumes:
+      - redis-data:/data
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+  # Optional: MinIO for local S3 testing
+  minio:
+    image: minio/minio:latest
+    container_name: edge-minio
+    profiles: ["dev"]  # Only start in dev profile
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - edge-network
+    restart: unless-stopped
+
+networks:
+  edge-network:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: edge-br
+      com.docker.network.bridge.enable_icc: "true"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
+      com.docker.network.driver.mtu: "1500"
+
+volumes:
+  orthanc-buffer:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-/var/edge-gateway}/orthanc-buffer
+  hl7-buffer:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_PATH:-/var/edge-gateway}/hl7-buffer
+  redis-data:
+  minio-data:
