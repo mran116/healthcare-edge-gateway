@@ -1,0 +1,59 @@
+gitignore# Environment files
+.env
+*.env
+!.env.template
+
+# Certificates
+*.pem
+*.key
+*.crt
+*.cer
+certs/
+
+# Data directories
+data/
+buffer/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+
+# Backup files
+*.bak
+*.backup
+backup/
+
+# Test files
+test-data/
+*.dcm
+*.hl7
